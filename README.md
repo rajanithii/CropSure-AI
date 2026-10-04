@@ -184,7 +184,6 @@ AGRI_CLAIM_AI/
 │   ├── .env.example
 │   ├── package.json
 │   ├── package-lock.json
-│   ├── vercel.json
 │   └── server.js
 ├── frontend/
 │   ├── admin/index.html
@@ -200,7 +199,7 @@ The backend owns the npm dependencies and lockfile. The repository-root `package
 Deploy the Express API from the backend directory:
 
 1. Import this repository into Vercel.
-2. Set **Root Directory** to `backend`. The checked-in `backend/vercel.json` routes every request to `server.js`; Vercel installs from `backend/package-lock.json`.
+2. Set **Root Directory** to `backend`. Vercel's Express zero-configuration support detects `backend/server.js` and installs from `backend/package-lock.json`; no custom `vercel.json` is needed.
 3. Use Node.js `22.x`, also specified in `backend/package.json`. Do not set `PORT`; Vercel manages it.
 4. Add the environment variables below in the Vercel project settings, then deploy.
 
@@ -212,7 +211,7 @@ Deploy the Express API from the backend directory:
 | `OPENAI_API_KEY` | No | Optional; used when set, mock mode is off, and Groq is not configured. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` | No | Optional; set all three valid values to send SMS. Otherwise SMS is logged as a mock. |
 
-Verify the deployment at `https://<your-deployment>/` and `https://<your-deployment>/api/health`. The root returns API status and endpoint links. MongoDB connections are cached across warm invocations and use short connection timeouts. Assessment is awaited before the claim endpoint responds so serverless execution cannot be frozen mid-assessment; the Vercel function duration is configured to 30 seconds.
+Verify the deployment at `https://<your-deployment>/` and `https://<your-deployment>/api/health`. The root returns API status and endpoint links. MongoDB connections are cached across warm invocations and use short connection timeouts. Assessment is awaited before the claim endpoint responds so serverless execution cannot be frozen mid-assessment.
 
 Vercel function request bodies are limited to 4.5 MB, so image uploads are capped at 4 MB on Vercel (10 MB locally). Vercel uploads use temporary `/tmp` storage and may disappear between invocations or instances; use external object storage for durable images. The `frontend/` pages are static mockups and are not part of this backend-root deployment.
 
