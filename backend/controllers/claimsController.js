@@ -5,16 +5,29 @@ const { generateClaimAssessment} = require('../ai/llm');
 
 // ─── SMS helper ────────────────────────────────────────────────────────────────
 async function sendSMS(phone, message) {
-  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const fromPhone = process.env.TWILIO_PHONE_NUMBER?.trim();
+  const hasPlaceholder = [accountSid, authToken, fromPhone]
+    .some(value => value && /^(your_|placeholder|replace[_ -]?me)/i.test(value));
+
+  if (!accountSid && !authToken && !fromPhone) {
     console.log(`📱 [SMS MOCK] To: ${phone} | ${message}`);
     return;
   }
+
+  if (!accountSid?.startsWith('AC') || !authToken || !fromPhone || hasPlaceholder) {
+    console.warn('Twilio SMS disabled: configure a valid Account SID, auth token, and sender number. Falling back to mock SMS.');
+    console.log(`📱 [SMS MOCK] To: ${phone} | ${message}`);
+    return;
+  }
+
   try {
     const twilio = require('twilio');
-    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    const client = twilio(accountSid, authToken);
     await client.messages.create({
       body: message,
-      from: process.env.TWILIO_PHONE_NUMBER,
+      from: fromPhone,
       to:   phone.startsWith('+') ? phone : `+91${phone}`,
     });
   } catch (e) { console.error('SMS error:', e.message); }
@@ -27,7 +40,7 @@ function calcFinalPriority(aiScore, llmScore, landArea) {
   return Math.round(0.5 * aiScore + 0.3 * llmScore + 0.2 * landWeight);
 }
 
-// ─── Background AI processing (fire-and-forget) ────────────────────────────────
+// ─── Claim assessment ─────────────────────────────────────────────────────────
 async function processClaimAI(claimId, file, cropType, description, district, landArea) {
   try {
     console.log(`🤖 AI processing claim ${claimId}…`);
@@ -44,7 +57,7 @@ async function processClaimAI(claimId, file, cropType, description, district, la
 
     const finalPriority = calcFinalPriority(vision.severityScore, llm.priorityScore, landArea);
 
-    await ClaimStore.updateById(claimId, {
+    const updatedClaim = await ClaimStore.updateById(claimId, {
       severityScore:    vision.severityScore,
       damageLevel:      vision.damageLevel,
       llmExplanation:   llm.explanation,
@@ -54,10 +67,13 @@ async function processClaimAI(claimId, file, cropType, description, district, la
       status:      'Under Review',
       aiProcessed: true,
     });
+    if (!updatedClaim) throw new Error(`Claim ${claimId} was not found when saving its assessment`);
 
     console.log(`✅ AI done for ${claimId}: severity=${vision.severityScore}%, priority=${finalPriority}/100`);
+    return true;
   } catch (err) {
     console.error(`❌ AI processing failed for ${claimId}:`, err.message);
+    return false;
   }
 }
 
@@ -87,32 +103,42 @@ exports.submitClaim = async (req, res) => {
       `Namaskar ${farmerName}! Your crop insurance claim ${claim.claimId} has been submitted under PM Fasal Bima Yojana. AI assessment is in progress.`
     );
 
-    // Run AI in background – don't block the HTTP response
-    processClaimAI(claim._id || claim.claimId, req.file, cropType, description || '', district, landArea)
-      .catch(console.error);
+    const assessmentCompleted = await processClaimAI(
+      claim._id || claim.claimId,
+      req.file,
+      cropType,
+      description || '',
+      district,
+      landArea
+    );
+    const assessedClaim = assessmentCompleted
+      ? await ClaimStore.findById(claim._id || claim.claimId) || claim
+      : claim;
 
     res.status(201).json({
       success: true,
-      message: 'Claim submitted successfully. AI assessment running in background.',
+      message: assessmentCompleted
+        ? 'Claim submitted successfully. AI assessment completed.'
+        : 'Claim submitted successfully. AI assessment could not be completed.',
       claim: {
-        id:             claim._id || claim.claimId,
-        claimId:        claim.claimId,
-        status:         claim.status,
-        farmerName:     claim.farmerName,
-        phone:          claim.phone,
-        cropType:       claim.cropType,
-        district:       claim.district,
-        landArea:       claim.landArea,
-        description:    claim.description,
-        imageUrl:       claim.imageUrl,
-        aiProcessed:    claim.aiProcessed,
-        severityScore:  claim.severityScore,
-        damageLevel:    claim.damageLevel,
-        llmExplanation: claim.llmExplanation,
-        llmReasoning:   claim.llmReasoning,
-        finalPriority:  claim.finalPriority,
-        createdAt:      claim.createdAt,
-        updatedAt:      claim.updatedAt,
+        id:             assessedClaim._id || assessedClaim.claimId,
+        claimId:        assessedClaim.claimId,
+        status:         assessedClaim.status,
+        farmerName:     assessedClaim.farmerName,
+        phone:          assessedClaim.phone,
+        cropType:       assessedClaim.cropType,
+        district:       assessedClaim.district,
+        landArea:       assessedClaim.landArea,
+        description:    assessedClaim.description,
+        imageUrl:       assessedClaim.imageUrl,
+        aiProcessed:    assessedClaim.aiProcessed,
+        severityScore:  assessedClaim.severityScore,
+        damageLevel:    assessedClaim.damageLevel,
+        llmExplanation: assessedClaim.llmExplanation,
+        llmReasoning:   assessedClaim.llmReasoning,
+        finalPriority:  assessedClaim.finalPriority,
+        createdAt:      assessedClaim.createdAt,
+        updatedAt:      assessedClaim.updatedAt,
       },
     });
   } catch (err) {

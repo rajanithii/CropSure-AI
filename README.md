@@ -18,7 +18,7 @@
 
 ## At a glance
 
-CropSure AI is a Node.js and Express backend with two static HTML mockup pages. The backend accepts crop claim details, optionally stores an uploaded image, runs a prototype assessment in the background, and provides endpoints to review claims and update their status.
+CropSure AI is a Node.js and Express backend with two static HTML mockup pages. The backend accepts crop claim details, optionally stores an uploaded image, completes a prototype assessment before responding, and provides endpoints to review claims and update their status.
 
 The assessment is decision support only. The current vision step does not inspect image pixels, and the HTML pages are not connected to the API. Claims must be submitted and managed through the API until frontend integration is implemented.
 
@@ -32,15 +32,15 @@ The assessment is decision support only. The current vision step does not inspec
 flowchart LR
     A[POST claim details and optional image] --> B[Save claim as Pending]
     B --> C[Attempt submission SMS]
-    C --> D[Return HTTP 201]
-    C --> E[Run assessment in background]
-    E --> F[Simulated vision score]
-    F --> G[LLM explanation and priority]
-    G --> H[Calculate final priority and set Under Review]
+    C --> D[Run assessment]
+    D --> E[Simulated vision score]
+    E --> F[LLM explanation and priority]
+    F --> G[Calculate final priority and set Under Review]
+    G --> H[Return HTTP 201]
     H --> I[GET claim or update status]
 ```
 
-The API responds without waiting for background assessment to finish. Poll `GET /api/claims/:id` or `GET /api/claims` to see the updated claim. Without Twilio credentials, SMS events are written to the backend console.
+Claim submission waits for assessment to finish before returning HTTP 201. This ensures Vercel does not freeze the function before claim processing completes. Without Twilio credentials, SMS events are written to the backend console.
 
 ### Claim status
 
@@ -48,7 +48,7 @@ The API responds without waiting for background assessment to finish. Poll `GET 
   <img src="assets/README/claim-lifecycle.svg" alt="Typical claim status path from Pending through Under Review to an administrative decision" width="100%" />
 </p>
 
-The status API accepts any supported status directly; it does not enforce a transition order. Successful background AI processing sets the claim to `Under Review`. A separate SMS attempt occurs when the status endpoint is used for `Under Review`, `Approved`, or `Rejected`.
+The status API accepts any supported status directly; it does not enforce a transition order. Successful AI processing sets the claim to `Under Review`. A separate SMS attempt occurs when the status endpoint is used for `Under Review`, `Approved`, or `Rejected`.
 
 ## Quick start
 
@@ -66,7 +66,13 @@ The backend listens on `http://localhost:5000`. Check `http://localhost:5000/api
 
 ### Try the claim API
 
-In a second PowerShell window, submit a claim (the image field is optional):
+Keep the server terminal open. In a second PowerShell window, check that the API is running:
+
+```powershell
+curl.exe http://localhost:5000/api/health
+```
+
+Then submit a test claim (the image field is optional):
 
 ```powershell
 curl.exe -X POST http://localhost:5000/api/claims `
@@ -78,11 +84,13 @@ curl.exe -X POST http://localhost:5000/api/claims `
   -F "description=Possible flood damage"
 ```
 
-To upload a photo, add `-F "image=@path\to\crop.jpg"`. The upload field is named `image`; accepted types are JPEG, PNG, GIF, and WebP, with a 10 MB limit. After submitting, query the returned claim ID once the background assessment has had time to complete:
+The response should have HTTP status `201` and include the assessed claim, normally with status `Under Review` and severity and priority fields. If assessment fails, the claim remains `Pending`. List saved claims with:
 
 ```powershell
 curl.exe http://localhost:5000/api/claims
 ```
+
+To upload a photo, add `-F "image=@path\to\crop.jpg"` to the submit command. The upload field is named `image`; accepted types are JPEG, PNG, GIF, and WebP, with a 10 MB local limit and a 4 MB Vercel limit.
 
 To try the page layouts, open `frontend/farmer/index.html` and `frontend/admin/index.html` in a browser. These are static mockups: the farmer button does not submit a claim, and the admin figures and rows are hard-coded examples.
 
@@ -107,7 +115,7 @@ The assessment has two code stages, but only the language-model stage can make a
 
 1. `backend/ai/vision.js` simulates severity. It uses uploaded file size, random variation, a time-based component, and a crop multiplier; it does not analyze image contents. If no image is supplied, the controller assigns a random severity score and a `Medium` damage level.
 2. `backend/ai/llm.js` returns templated mock text when mock mode is enabled or no AI key is configured. Otherwise it calls Groq first when `GROQ_API_KEY` is present, or OpenAI when only `OPENAI_API_KEY` is present. Failed live calls fall back to the mock response.
-3. The controller combines the severity, LLM priority, and land area into a final score, then updates the claim to `Under Review` when background processing succeeds.
+3. The controller combines the severity, LLM priority, and land area into a final score, then updates the claim to `Under Review` when assessment succeeds.
 
 Severity labels are assigned by score: `Low` below 30, `Medium` from 30 to 54, `High` from 55 to 74, and `Critical` at 75 or above. Crop multipliers are configured for 11 crop names in `vision.js`.
 
@@ -145,13 +153,15 @@ Copy `backend/.env.example` to `backend/.env`. Do not commit real credentials.
 | `PORT` | HTTP port | `5000` |
 | `MONGODB_URI` | MongoDB connection string | `mongodb://localhost:27017/agriclaim` |
 | `USE_MOCK_AI` | Force mock LLM responses | `true` |
-| `GROQ_API_KEY` | Optional Groq LLM key | Placeholder |
-| `OPENAI_API_KEY` | Optional OpenAI LLM key | Placeholder |
-| `TWILIO_ACCOUNT_SID` | Optional Twilio account | Placeholder |
-| `TWILIO_AUTH_TOKEN` | Optional Twilio authentication token | Placeholder |
-| `TWILIO_PHONE_NUMBER` | Twilio sender number | `+1234567890` placeholder |
+| `GROQ_API_KEY` | Optional Groq LLM key | Blank |
+| `OPENAI_API_KEY` | Optional OpenAI LLM key | Blank |
+| `TWILIO_ACCOUNT_SID` | Optional Twilio account | Blank (SMS logged to console) |
+| `TWILIO_AUTH_TOKEN` | Optional Twilio authentication token | Blank (SMS logged to console) |
+| `TWILIO_PHONE_NUMBER` | Optional Twilio sender number | Blank (SMS logged to console) |
 
-MongoDB defaults to the local `agriclaim` database. If database operations fail, `ClaimStore` falls back to process memory; those claims are lost when the backend stops. Without Twilio account SID and auth token, notification attempts are logged instead of sent.
+MongoDB defaults to the local `agriclaim` database. If database operations fail, `ClaimStore` falls back to process memory; those claims are lost when the backend stops. SMS is logged to the backend console unless all three Twilio values are configured with valid credentials. Leave them blank for a local demo; the example values are intentionally empty.
+
+Restart the backend after changing `backend/.env` so it loads the updated configuration.
 
 ## Project structure
 
@@ -170,10 +180,11 @@ AGRI_CLAIM_AI/
 │   ├── models/Claim.js
 │   ├── routes/claims.js
 │   ├── uploadsDir.js
-│   ├── uploads/                 # Runtime uploads
+│   ├── uploads/                 # Runtime uploads; contains .gitkeep
 │   ├── .env.example
 │   ├── package.json
 │   ├── package-lock.json
+│   ├── vercel.json
 │   └── server.js
 ├── frontend/
 │   ├── admin/index.html
@@ -189,20 +200,30 @@ The backend owns the npm dependencies and lockfile. The repository-root `package
 Deploy the Express API from the backend directory:
 
 1. Import this repository into Vercel.
-2. Set **Root Directory** to `backend`. Vercel will detect the Express `server.js` entrypoint and install dependencies from `backend/package-lock.json`.
-3. Leave the default install/build settings in place.
+2. Set **Root Directory** to `backend`. The checked-in `backend/vercel.json` routes every request to `server.js`; Vercel installs from `backend/package-lock.json`.
+3. Use Node.js `22.x`, also specified in `backend/package.json`. Do not set `PORT`; Vercel manages it.
 4. Add the environment variables below in the Vercel project settings, then deploy.
 
-| Variable | Vercel value |
-| --- | --- |
-| `MONGODB_URI` | A reachable hosted MongoDB connection string for shared, persistent claims. |
-| `USE_MOCK_AI` | Set to `true` for a demo without an AI provider key. |
-| `GROQ_API_KEY` or `OPENAI_API_KEY` | Optional; set a provider key and `USE_MOCK_AI=false` to use live LLM responses. |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` | Optional; set all three to send SMS. |
+| Variable | Required? | Vercel value |
+| --- | --- | --- |
+| `MONGODB_URI` | Recommended for persistent claims | A reachable hosted MongoDB connection string. Without it, claims use instance-local memory and are not durable or shared. |
+| `USE_MOCK_AI` | No | Set to `true` for a demo (recommended); set to `false` to enable a configured live AI provider. |
+| `GROQ_API_KEY` | No | Optional; used when set and mock mode is off, and takes precedence over OpenAI. |
+| `OPENAI_API_KEY` | No | Optional; used when set, mock mode is off, and Groq is not configured. |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` | No | Optional; set all three valid values to send SMS. Otherwise SMS is logged as a mock. |
 
-Verify the deployment at `/` and `/api/health`. The root returns API status and endpoint links. If `MONGODB_URI` is omitted, the API can start in demo mode using instance-local memory, but claim data is not durable or shared between Vercel instances.
+Verify the deployment at `https://<your-deployment>/` and `https://<your-deployment>/api/health`. The root returns API status and endpoint links. MongoDB connections are cached across warm invocations and use short connection timeouts. Assessment is awaited before the claim endpoint responds so serverless execution cannot be frozen mid-assessment; the Vercel function duration is configured to 30 seconds.
 
-Vercel function request bodies are limited to 4.5 MB, so image uploads are capped at 4 MB on Vercel (10 MB locally). Vercel uploads use temporary `/tmp` storage and may disappear between instances; use external object storage for durable images. The `frontend/` pages are static mockups and are not part of this backend-root deployment.
+Vercel function request bodies are limited to 4.5 MB, so image uploads are capped at 4 MB on Vercel (10 MB locally). Vercel uploads use temporary `/tmp` storage and may disappear between invocations or instances; use external object storage for durable images. The `frontend/` pages are static mockups and are not part of this backend-root deployment.
+
+For a deployed claim smoke test, use the `claimId` returned by the POST response in the final GET:
+
+```powershell
+curl.exe https://<your-deployment>/
+curl.exe https://<your-deployment>/api/health
+curl.exe -X POST https://<your-deployment>/api/claims -F "farmerName=Ramesh" -F "phone=9876543210" -F "cropType=Rice" -F "district=Jalgaon" -F "landArea=5" -F "description=Possible flood damage"
+curl.exe https://<your-deployment>/api/claims/<claimId>
+```
 
 ## Current limitations
 

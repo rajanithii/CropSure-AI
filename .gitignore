@@ -2,3 +2,6 @@ node_modules/
 .env
 uploads/
 .vscode/
+!backend/uploads/
+backend/uploads/*
+!backend/uploads/.gitkeep

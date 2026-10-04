@@ -1,10 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const uploadsDir = process.env.VERCEL === '1'
+// Vercel's /tmp filesystem is temporary; use external object storage for durable images.
+const uploadsDir = process.env.VERCEL
   ? path.resolve('/tmp', 'cropsure-ai-uploads')
-  : path.join(__dirname, 'uploads');
+  : path.resolve(__dirname, 'uploads');
 
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+fs.mkdirSync(uploadsDir, { recursive: true });
 
 module.exports = uploadsDir;
